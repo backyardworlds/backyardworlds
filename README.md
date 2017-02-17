@@ -1,2 +1,2 @@
 # backyardworlds
-Code for the Backyard Worlds: Planet 9 project
+Code to digest the exported Zooniverse classification data
