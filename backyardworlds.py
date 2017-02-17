@@ -1,5 +1,6 @@
 import sys
 import pandas as pd
+import numpy as np
 import json
 import matplotlib.pyplot as plt
 from astropy.io import ascii
@@ -7,7 +8,7 @@ from astropy.io import ascii
 class ClassificationData(object):
     def __init__(self, file):
         # Read the data into a table
-        self.data = ascii.read(file)
+        self.data = ascii.read(file)[:100]
         
         # Save the keys, users, and subjects as attributes
         self.cols = self.data.colnames
@@ -21,7 +22,12 @@ class ClassificationData(object):
         """
         Get the classification records for a particular subject
         """
-        return self.data[self.data['subject_ids']==subject_id]
+        subject = self.data[self.data['subject_ids']==subject_id]
+        
+        # Group by frame
+        frames = subject.group_by('frame').groups
+        
+        return frames
         
     def get_retired(self, retirement=15):
         """
@@ -38,6 +44,25 @@ class ClassificationData(object):
         
         # Get ids of retired subjects
         self.retired = filtered.groups.keys
+        
+    def plot(self, subject_id):
+        """
+        Plot the clicks on a particular subject to isolate 
+        the sources in each frame
+        """
+        # Get the subject
+        frames = self.get_subject(subject_id)
+        
+        # Split it by frame
+        for frame in frames:
+            plt.figure()
+            # Pull out the coordinates
+            xy = np.array(frame[['x','y']])
+        
+            # Plot it!
+            plt.scatter(xy['x'], xy['y'])
+        
+            # Plot the cutout too!
         
 def generate_CSV(classfile_in, markfile_out):
     """
