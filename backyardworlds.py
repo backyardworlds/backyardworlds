@@ -1,8 +1,44 @@
 import sys
 import pandas as pd
 import json
+import matplotlib.pyplot as plt
 from astropy.io import ascii
 
+class ClassificationData(object):
+    def __init__(self, file):
+        # Read the data into a table
+        self.data = ascii.read(file)
+        
+        # Save the keys, users, and subjects as attributes
+        self.cols = self.data.colnames
+        self.users = list(set(self.data['user_name']))
+        self.subjects = list(set(self.data['subject_ids']))
+        
+        # Attribute for retired subjects
+        self.retired = []
+        
+    def get_subject(self, subject_id):
+        """
+        Get the classification records for a particular subject
+        """
+        return self.data[self.data['subject_ids']==subject_id]
+        
+    def get_retired(self, retirement=15):
+        """
+        ID the subjects that are retired
+        """
+        # Group by subject_id
+        grouped = self.data.group_by('subject_ids').groups
+        
+        # Count how many classifications for each subject
+        counted = np.diff(grouped.indices)
+        
+        # Get indices of those that make cutoff
+        filtered = groups[np.where(counted>=retirement)]
+        
+        # Get ids of retired subjects
+        self.retired = filtered.groups.keys
+        
 def generate_CSV(classfile_in, markfile_out):
     """
     Generates a readable CSV file from exported Zooniverse data
@@ -69,29 +105,4 @@ def generate_CSV(classfile_in, markfile_out):
                'tool','tool_label','x','y','frame']
     out = pd.DataFrame(clist)[col_order]
     out.to_csv(markfile_out,index_label='mark_id')
-    
-class ClassificationData(object):
-    def __init__(self, file):
-        # Read the data into a table
-        self.data = ascii.read(file)
-        
-        # Save the keys and users as attributes
-        self.cols = self.data.keys
-        self.users = list(set(self.data['user_name']))
-
-    def users(self):
-        """
-        Show the user data
-        """
-        # Print some stats    
-        print('Number of users:',len(self.users))
-        print('Number of classifications:',len(self.data)/4.)
-        
-
-    def objects_of_interest(self):
-        """
-        ID the tiles as a function of classification
-        """
-        ids = self.data['subject_ids']
-         
     
