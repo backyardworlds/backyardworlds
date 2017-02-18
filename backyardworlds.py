@@ -16,7 +16,7 @@ class ClassificationData(object):
         
         # Trim data to post-launch
         start = Time(start_date)
-        self.data = self.data[np.where(dates>start)][:100]
+        self.data = self.data[np.where(dates>start)][:5000]
 
         # Save the keys, users, and subjects as attributes
         self.cols = self.data.colnames
@@ -32,7 +32,7 @@ class ClassificationData(object):
         """
         # 
         subject = self.data[self.data['subject_ids']==subject_id]
-        
+                
         if plot:
             # Group by frame
             frames = subject.group_by('frame').groups
@@ -56,24 +56,36 @@ class ClassificationData(object):
             for n in range(4):
                 axes[n].set_title('Frame {}'.format(n))
                 
-            
         return subject
         
     def get_retired(self, retirement=15):
         """
         ID the subjects that are retired
         """
-        # Group by subject_id
-        grouped = self.data.group_by('subject_ids').groups
+        retire = []
+        for sub in self.subjects:
+            subject = self.get_subject(sub, plot=False)
+            
+            class_ids = list(set(subject['classification_id']))
+            
+            if len(class_ids)>=retirement:
+                retire.append(sub)
         
-        # Count how many classifications for each subject
-        counted = np.diff(grouped.indices)
+        self.retired = retire
         
-        # Get indices of those that make cutoff
-        filtered = grouped[np.where(counted>=retirement)]
+        # # Group by subject_id
+        # grouped = self.data.group_by('subject_ids').groups
+        #
+        # # Count how many classifications for each subject
+        # counted = np.diff(grouped.indices)
+        #
+        # # Get indices of those that make cutoff
+        # filtered = grouped[np.where(counted>=retirement)]
+        #
+        # # Get ids of retired subjects
+        # self.retired = filtered.groups.keys
+        #
         
-        # Get ids of retired subjects
-        self.retired = filtered.groups.keys
         
 def generate_CSV(classfile_in, markfile_out):
     """
