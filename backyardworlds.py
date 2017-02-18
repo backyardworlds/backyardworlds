@@ -4,30 +4,60 @@ import numpy as np
 import json
 import matplotlib.pyplot as plt
 from astropy.io import ascii
+from astropy.time import Time
 
 class ClassificationData(object):
-    def __init__(self, file):
+    def __init__(self, file, start_date='2017-02-15 12:00:00'):
         # Read the data into a table
-        self.data = ascii.read(file)[:100]
+        self.data = ascii.read(file)
         
+        # Convert date string to astropy.time.Time
+        dates = [Time(t.replace(' UTC','')) for t in self.data['created_at']]
+        
+        # Trim data to post-launch
+        start = Time(start_date)
+        self.data = self.data[np.where(dates>start)][:100]
+
         # Save the keys, users, and subjects as attributes
         self.cols = self.data.colnames
         self.users = list(set(self.data['user_name']))
         self.subjects = list(set(self.data['subject_ids']))
-        
+
         # Attribute for retired subjects
         self.retired = []
         
-    def get_subject(self, subject_id):
+    def get_subject(self, subject_id, plot=True):
         """
         Get the classification records for a particular subject
         """
+        # 
         subject = self.data[self.data['subject_ids']==subject_id]
         
-        # Group by frame
-        frames = subject.group_by('frame').groups
+        if plot:
+            # Group by frame
+            frames = subject.group_by('frame').groups
         
-        return frames
+            # Draw figure
+            f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, sharex='col', sharey='row')
+            
+            # Populate the frames
+            axes = [ax1,ax2,ax3,ax4]
+            for n, frame in zip(frames.keys['frame'], frames):
+                
+                # Pull out the coordinates
+                xy = np.array(frame[['x','y']])
+    
+                # Plot it!
+                axes[n].scatter(xy['x'], xy['y'])
+                
+                # Plot the cutouts too?!
+                
+            # Add labels
+            for n in range(4):
+                axes[n].set_title('Frame {}'.format(n))
+                
+            
+        return subject
         
     def get_retired(self, retirement=15):
         """
@@ -40,29 +70,10 @@ class ClassificationData(object):
         counted = np.diff(grouped.indices)
         
         # Get indices of those that make cutoff
-        filtered = groups[np.where(counted>=retirement)]
+        filtered = grouped[np.where(counted>=retirement)]
         
         # Get ids of retired subjects
         self.retired = filtered.groups.keys
-        
-    def plot(self, subject_id):
-        """
-        Plot the clicks on a particular subject to isolate 
-        the sources in each frame
-        """
-        # Get the subject
-        frames = self.get_subject(subject_id)
-        
-        # Split it by frame
-        for frame in frames:
-            plt.figure()
-            # Pull out the coordinates
-            xy = np.array(frame[['x','y']])
-        
-            # Plot it!
-            plt.scatter(xy['x'], xy['y'])
-        
-            # Plot the cutout too!
         
 def generate_CSV(classfile_in, markfile_out):
     """
