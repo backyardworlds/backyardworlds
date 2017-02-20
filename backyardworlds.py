@@ -8,11 +8,25 @@ from sklearn import metrics
 from sklearn.preprocessing import StandardScaler
 from astropy.io import ascii
 from astropy.time import Time
+from astropy.table import Table
 
 class ClassificationData(object):
-    def __init__(self, file, start_date='2017-02-15 12:00:00'):
-        # Read the data into a table
-        self.data = ascii.read(file)
+    def __init__(self, classification_file, subject_file, start_date='2017-02-15 12:00:00'):
+        """
+        Create the ClassificationData object and load the data
+        
+        Parameters
+        ----------
+        classification_file: str
+            The CSV file containing the classification data
+        subject_file: str
+            The CSV file containing the subject metadata
+        start_date: str
+            The dat after which to consider data
+        
+        """
+        # Read the classification data into a table
+        self.data = ascii.read(classification_file)
         
         # Convert date string to astropy.time.Time
         dates = [Time(t.replace(' UTC','')) for t in self.data['created_at']]
@@ -20,31 +34,48 @@ class ClassificationData(object):
         # Trim data to post-launch
         start = Time(start_date)
         self.data = self.data[np.where(dates>start)]
-
+        
         # Save the keys, users, and subjects as attributes
         self.cols = self.data.colnames
         self.users = list(set(self.data['user_name']))
-        self.subjects = list(set(self.data['subject_ids']))
-
+        
         # Attribute for retired subjects
         self.retired = []
         
+        # Read the subject metadata into a table
+        self.subjects = ascii.read(subject_file)
+        
     def get_subject(self, subject_id, plot='composite'):
         """
-        Get the classification records for a particular subject
+        Get the classification data for a particular subject
+        
+        Parameters
+        ----------
+        subject_id: int
+            The id for the subject to look at
+        
+        Returns
+        -------
+        astropy.table.Table
+            A table of all the data for this subject
         """
-        # 
+        # Just get clicks for this subject
         subject = self.data[self.data['subject_ids']==subject_id]
-                
+        
+        # Get subject metadata
+        meta = self.subjects[self.subjects['subject_id']==subject_id][0]
+        
         # Group by frame
         frames = subject.group_by('frame').groups
         
-        # Get point density
+        # Get all the click locations
         xy = np.array(subject[['x','y']])
-        # xy = np.array([xy['x'],xy['y']])
         
-        # Plot the density
-        clusters = local_maxima(xy)
+        # Convert the locations to coordinates
+        coords = get_coordinates(xy, meta)
+        
+        # Find the centers of the sufficiently dense clusters
+        clusters = cluster_centers(xy)
         
         if plot=='composite':
             
@@ -76,7 +107,7 @@ class ClassificationData(object):
                 
                 # Pull out the coordinates
                 xy = np.array(frame[['x','y']])
-    
+                
                 # Plot it!
                 axes[n].scatter(xy['x'], xy['y'])
                 
@@ -115,11 +146,98 @@ class ClassificationData(object):
         # # Get ids of retired subjects
         # self.retired = filtered.groups.keys
         #
-        
-def local_maxima(X, eps=20, min_samples=3, plot=True):
+
+def get_coordinates(coords, metadata):
+    """
+    Calculates the RA and Dec values of the given coords
+    based on the RA dn Dec of the tile center
+    
+    Parameters
+    ----------
+    coords: array-like
+        The (x,y) pixel locations to convert to (RA, Dec)
+    metadata: astropy.table.row.Row
+        The metadata for the given subject
+    
+    Returns
+    -------
+    np.ndarray
+        The (Ra,Dec) of the input locations
+    """
+    # First some constants
+    pio180 = np.pi/180.0            # This is PI divided by 180.
+    pixrad = (2.75/3600)*pio180     # unWISE pixel, in radians
+
+    #  Next we'll need the ra and dec of center of the tile in question
+    # note that use the subtile center for this purpose
+    # ratile is the ra of the tile center
+    # dectile is the dec of the tile center
+    
+    ratile = metadata['RA']
+    dectile = dectile['Dec']
+    tilename = metadata['tilename']
+
+    # Here are some sines and cosines for the gnomonic projection
+    sinra = sin(ratile*pio180)
+    sindec = sin(dectile*pio180)
+    cosra = cos(ratile*pio180)
+    cosdec = cos(dectile*pio180)
+
+    # We'll also need to know subfx, subfy, which tell you where
+    # the subtile is in the tile.
+    # You can read these from the names of the images
+    # for example:  "unwise-1600m197.x3.y6.e0.jpeg"
+    # You can read from this that subfx = 3   subfx = 6
+    subfx = int(tilename.split('.')[1][1:])
+    subfy = int(tilename.split('.')[2][1:])
+
+    # xc,yc will be the coordinates of subtile center in the tangent plane
+    xc =-((subfx+0.5)*256.0 - 1024.5)*pixrad
+    yc = ((subfy+0.5)*256.0 - 1024.5)*pixrad
+
+    # xp and yp will be the coordinates in the tangent plane
+    xp = xc + (256-x)*pixrad/2.0
+    yp = yc + (256-y)*pixrad/2.0
+
+    # Here's the Gnomonic projection
+    rho = np.sqrt(xp*xp+yp*yp)
+    cg = np.arctan(rho)
+    dec = np.arcsin(cos(cg)*sindec+yp*sin(cg)*cosdec/rho)/pio180 
+    ra = ratile + np.arctan(xp*sin(cg),rho*cosdec*cos(cg)-yp*sindec*sin(cg))/pio180 
+
+    # now flip around the RA and dec as needed
+    if dec > 90.0:
+        dec = 180.0-dec
+        ra = ra+180.0
+    elif dec < -90.0:
+        dec = -180.0-dec
+        ra = ra+180.0
+    
+    if ra < 0:
+        ra = ra+360.0
+    ra = ra % 360.0
+    
+    return (ra, dec)
+
+def cluster_centers(X, eps=20, min_samples=3):
     """
     Calculate the centers of the point clusters given the
-    radius (eps) and minimum number of points (min_samples)    
+    radius (eps) and minimum number of points (min_samples)
+    
+    Parameters
+    ----------
+    X: array-like
+        The list of (x,y) coordinates of all clicks
+    eps: int
+        The distance threshold for cluster membership
+    min_samples: int
+        The minimum number of points in a cluster to be
+        considered interesting
+    
+    Returns
+    -------
+    np.ndarray
+        An array of the cluster centers
     """
     X = np.array([list(x) for x in X])
     db = DBSCAN(eps=eps, min_samples=min_samples).fit(X)
@@ -143,8 +261,8 @@ def local_maxima(X, eps=20, min_samples=3, plot=True):
     clusters = np.asarray([np.mean(c, axis=0) for c in clusters])
     
     return clusters
-        
-def generate_CSV(classfile_in, markfile_out):
+
+def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_out='subjects.csv'):
     """
     Generates a readable CSV file from exported Zooniverse data
     
@@ -154,26 +272,50 @@ def generate_CSV(classfile_in, markfile_out):
         The file to convert
     markfile_out: str
         The path and filename of the output file
+    """
+    # Read in subject CSV and expand JSON fields
+    subjects = pd.read_csv(classfile_in)
+    subjects['metadata'] = [json.loads(q) for q in subjects.metadata]
+    subjects['locations'] = [json.loads(q) for q in subjects.locations]
     
-    # -------------------------------------------------------------
-    # Panoptes Marking Export Script
-    #
-    # This script extracts individual markings from Zooniverse
-    # Panoptes classification data export CSV.  This script is 
-    # configured to export circular marker info for classifications
-    # collected only for the latest workflow version.
-    #
-    # Customizations are set for use with the following project:
-    # planet-9-rogue-worlds
-    #
-    # Column names, annotation info, and marking task ID may need
-    # be altered for this script to work for data exports from
-    # other projects.
-    #
-    # Written by: Cliff Johnson (lcj@ucsd.edu)
-    # Last Edited: 10 January 2017
-    # Based on scripts by Brooke Simmons 
-    # -------------------------------------------------------------
+    # Pull out the metadata for each entry
+    out = []
+    for index,sub in subjects.iterrows():
+        try:
+            id = int(sub.subject_id)
+            ra = sub.metadata.get('RA')
+            dec = sub.metadata.get('dec')
+            simbad = sub.metadata.get('SIMBAD')
+            vizier = sub.metadata.get('VizieR')
+            mjd0 = sub.metadata.get('MJD of Epoch 0')
+            mjd1 = sub.metadata.get('MJD of Epoch 1')
+            mjd2 = sub.metadata.get('MJD of Epoch 2')
+            mjd3 = sub.metadata.get('MJD of Epoch 3')
+            for m in [mjd0,mjd1,mjd2,mjd3,ra,dec]:
+                try:
+                    m = float(m)
+                except:
+                    m = None
+                    
+            out.append([id, ra, dec, mjd0, mjd1, mjd2, mjd3, simbad, vizier])
+        except:
+            pass
+    
+    # Write the data to CSV
+    cols = ['subject_id', 'RA', 'Dec', 'MJD0', 'MJD1', 'MJD2', 'MJD3', 'SIMBAD', 'VizieR']
+    out = Table(np.array(out), names=cols, dtype=[int,float,float,float,float,float,float,str,str])
+    out.write(markfile_out)
+    
+def classification_CSV(classfile_in='backyard-worlds-planet-9-classifications.csv', markfile_out='classifications.csv'):
+    """
+    Generates a readable CSV file from exported Zooniverse data
+    
+    Parameters
+    ----------
+    classfile_in: str
+        The file to convert
+    markfile_out: str
+        The path and filename of the output file
     
     """
     # Read in classification CSV and expand JSON fields
@@ -209,5 +351,5 @@ def generate_CSV(classfile_in, markfile_out):
     col_order = ['classification_id','user_name','user_id','created_at','subject_ids',
                'tool','tool_label','x','y','frame']
     out = pd.DataFrame(clist)[col_order]
-    out.to_csv(markfile_out,index_label='mark_id')
+    out.to_csv(markfile_out, index_label='mark_id')
     
