@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import json
 import matplotlib.pyplot as plt
+from sklearn.cluster import DBSCAN
+from sklearn import metrics
+from sklearn.preprocessing import StandardScaler
 from astropy.io import ascii
 from astropy.time import Time
 
@@ -16,7 +19,7 @@ class ClassificationData(object):
         
         # Trim data to post-launch
         start = Time(start_date)
-        self.data = self.data[np.where(dates>start)][:5000]
+        self.data = self.data[np.where(dates>start)]
 
         # Save the keys, users, and subjects as attributes
         self.cols = self.data.colnames
@@ -26,16 +29,43 @@ class ClassificationData(object):
         # Attribute for retired subjects
         self.retired = []
         
-    def get_subject(self, subject_id, plot=True):
+    def get_subject(self, subject_id, plot='composite'):
         """
         Get the classification records for a particular subject
         """
         # 
         subject = self.data[self.data['subject_ids']==subject_id]
                 
-        if plot:
-            # Group by frame
-            frames = subject.group_by('frame').groups
+        # Group by frame
+        frames = subject.group_by('frame').groups
+        
+        # Get point density
+        xy = np.array(subject[['x','y']])
+        # xy = np.array([xy['x'],xy['y']])
+        
+        # Plot the density
+        clusters = local_maxima(xy)
+        
+        if plot=='composite':
+            
+            # plt.figure()
+            
+            c = ['b', 'g', 'r', 'm']
+            for n, frame in zip(frames.keys['frame'], frames):
+                
+                # Pull out the coordinates
+                xy = np.array(frame[['x','y']])
+    
+                # Plot it!
+                plt.scatter(xy['x'], xy['y'], facecolors='none', 
+                            edgecolors=c[n], s=80, alpha=0.3,
+                            label='Frame {}'.format(n))
+            
+            # Plot the grouping center
+            plt.scatter(*clusters.T, marker='+', c='k', s=100, lw=2,
+                        label='Centroids')
+            
+        elif plot:
         
             # Draw figure
             f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, sharex='col', sharey='row')
@@ -86,6 +116,33 @@ class ClassificationData(object):
         # self.retired = filtered.groups.keys
         #
         
+def local_maxima(X, eps=20, min_samples=3, plot=True):
+    """
+    Calculate the centers of the point clusters given the
+    radius (eps) and minimum number of points (min_samples)    
+    """
+    X = np.array([list(x) for x in X])
+    db = DBSCAN(eps=eps, min_samples=min_samples).fit(X)
+
+    core_samples_mask = np.zeros_like(db.labels_, dtype=bool)
+    core_samples_mask[db.core_sample_indices_] = True
+    labels = db.labels_
+
+    # Black removed and is used for noise instead.
+    unique_labels = set(labels)
+    
+    # Group clusters
+    clusters = []
+    for k in unique_labels:
+        class_member_mask = (labels == k)
+        xy = X[class_member_mask & core_samples_mask]
+        if len(xy)>min_samples:
+            clusters.append(xy)
+    
+    # Get 2D mean of each cluster
+    clusters = np.asarray([np.mean(c, axis=0) for c in clusters])
+    
+    return clusters
         
 def generate_CSV(classfile_in, markfile_out):
     """
