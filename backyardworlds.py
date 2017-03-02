@@ -65,6 +65,8 @@ class ClassificationData(object):
         # Get subject metadata
         meta = self.subjects[self.subjects['subject_id']==subject_id][0]
         
+        print(meta)
+        
         # Group by frame
         frames = subject.group_by('frame').groups
         
@@ -172,22 +174,25 @@ def get_coordinates(coords, metadata):
     # note that use the subtile center for this purpose
     # ratile is the ra of the tile center
     # dectile is the dec of the tile center
-    
     ratile = metadata['RA']
-    dectile = dectile['Dec']
-    tilename = metadata['tilename']
+    dectile = metadata['Dec']
+    tilename = metadata['images'].split(',')[0]
+    print(ratile,dectile)
+    
+    # Make arrays of the x and y coordinates
+    x, y = np.asarray(coords['x']), np.asarray(coords['y'])
 
     # Here are some sines and cosines for the gnomonic projection
-    sinra = sin(ratile*pio180)
-    sindec = sin(dectile*pio180)
-    cosra = cos(ratile*pio180)
-    cosdec = cos(dectile*pio180)
+    sinra = np.sin(ratile*pio180)
+    sindec = np.sin(dectile*pio180)
+    cosra = np.cos(ratile*pio180)
+    cosdec = np.cos(dectile*pio180)
 
     # We'll also need to know subfx, subfy, which tell you where
     # the subtile is in the tile.
     # You can read these from the names of the images
     # for example:  "unwise-1600m197.x3.y6.e0.jpeg"
-    # You can read from this that subfx = 3   subfx = 6
+    # You can read from this that subfx = 3   subfy = 6
     subfx = int(tilename.split('.')[1][1:])
     subfy = int(tilename.split('.')[2][1:])
 
@@ -202,8 +207,8 @@ def get_coordinates(coords, metadata):
     # Here's the Gnomonic projection
     rho = np.sqrt(xp*xp+yp*yp)
     cg = np.arctan(rho)
-    dec = np.arcsin(cos(cg)*sindec+yp*sin(cg)*cosdec/rho)/pio180 
-    ra = ratile + np.arctan(xp*sin(cg),rho*cosdec*cos(cg)-yp*sindec*sin(cg))/pio180 
+    dec = np.arcsin(np.cos(cg)*sindec+yp*np.sin(cg)*cosdec/rho)/pio180 
+    ra = ratile + np.arctan(xp*np.sin(cg),rho*cosdec*np.cos(cg)-yp*sindec*np.sin(cg))/pio180 
 
     # now flip around the RA and dec as needed
     if dec > 90.0:
@@ -278,6 +283,8 @@ def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_o
     subjects['metadata'] = [json.loads(q) for q in subjects.metadata]
     subjects['locations'] = [json.loads(q) for q in subjects.locations]
     
+    # ['!IRSA Finder Chart', 'image3', '!VizieR', 'Tile Number', 'id', 'image0', 'Modified Julian Dates of Each Epoch', 'id numbers of nearest subtiles', 'subtile center', '!SIMBAD', 'image1', 'image2']
+    
     # Pull out the metadata for each entry
     out = []
     for index,sub in subjects.iterrows():
@@ -285,25 +292,22 @@ def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_o
             id = int(sub.subject_id)
             ra = sub.metadata.get('RA')
             dec = sub.metadata.get('dec')
-            simbad = sub.metadata.get('SIMBAD')
-            vizier = sub.metadata.get('VizieR')
-            mjd0 = sub.metadata.get('MJD of Epoch 0')
-            mjd1 = sub.metadata.get('MJD of Epoch 1')
-            mjd2 = sub.metadata.get('MJD of Epoch 2')
-            mjd3 = sub.metadata.get('MJD of Epoch 3')
-            for m in [mjd0,mjd1,mjd2,mjd3,ra,dec]:
-                try:
-                    m = float(m)
-                except:
-                    m = None
+            simbad = sub.metadata.get('!SIMBAD')
+            vizier = sub.metadata.get('!VizieR')
+            irsa = sub.metadata.get('!IRSA Finder Chart')
+            images = ', '.join([sub.metadata.get('image{}'.format(n)) for n in [0,1,2,3]])
+            mjd = 1#[float(i) for i in sub.metadata.get('Modified Julian Dates of Each Epoch')]
+            center = 1#[float(i) for i in sub.metadata.get('subtile center')]
+            tilenum = 1#int(sub.metadata.get('Tile Number'))
+            nearest = ', '.join(sub.metadata.get('id numbers of nearest subtiles'))
                     
-            out.append([id, ra, dec, mjd0, mjd1, mjd2, mjd3, simbad, vizier])
-        except:
+            out.append([id, ra, dec, simbad, vizier, irsa, images, mjd, center, tilenum, nearest])
+        except TypeError:
             pass
     
     # Write the data to CSV
-    cols = ['subject_id', 'RA', 'Dec', 'MJD0', 'MJD1', 'MJD2', 'MJD3', 'SIMBAD', 'VizieR']
-    out = Table(np.array(out), names=cols, dtype=[int,float,float,float,float,float,float,str,str])
+    cols = ['subject_id', 'RA', 'Dec', 'SIMBAD', 'VizieR', 'IRSA', 'images', 'MJD', 'Center', 'Tilenum', 'Nearest']
+    out = Table(np.array(out), names=cols)
     out.write(markfile_out)
     
 def classification_CSV(classfile_in='backyard-worlds-planet-9-classifications.csv', markfile_out='classifications.csv'):
