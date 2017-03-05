@@ -39,11 +39,14 @@ class ClassificationData(object):
         self.cols = self.data.colnames
         self.users = list(set(self.data['user_name']))
         
+        # Attribute for clicked subjects
+        self.clicked = list(np.unique(self.data['subject_ids']))
+        
         # Attribute for retired subjects
         self.retired = []
         
         # Read the subject metadata into a table
-        self.subjects = ascii.read(subject_file)
+        self.subjects = ascii.read(subject_file, format='fixed_width')
         
     def get_subject(self, subject_id, plot='composite'):
         """
@@ -61,93 +64,91 @@ class ClassificationData(object):
         """
         # Just get clicks for this subject
         subject = self.data[self.data['subject_ids']==subject_id]
-        
+
         # Get subject metadata
         meta = self.subjects[self.subjects['subject_id']==subject_id][0]
         
-        print(meta)
-        
-        # Group by frame
-        frames = subject.group_by('frame').groups
-        
-        # Get all the click locations
-        xy = np.array(subject[['x','y']])
-        
-        # Convert the locations to coordinates
-        coords = get_coordinates(xy, meta)
-        
-        # Find the centers of the sufficiently dense clusters
-        clusters = cluster_centers(xy)
-        
-        if plot=='composite':
+        if subject:
+            # Group by frame
+            frames = subject.group_by('frame').groups
+
+            # Get all the click locations
+            xy = np.array(subject[['x','y']])
+
+            # Convert the locations to coordinates
+            coords = get_coordinates(xy, meta)
+
+            # Find the centers of the sufficiently dense clusters
+            clusters = cluster_centers(xy)
+
+            if plot=='composite':
+
+                fig, ax = plt.subplots()
+
+                c = ['b', 'g', 'r', 'm']
+                for n, frame in zip(frames.keys['frame'], frames):
+
+                    # Pull out the coordinates
+                    xy = np.array(frame[['x','y']])
+
+                    # Plot it!
+                    ax.scatter(xy['x'], xy['y'], facecolors='none', 
+                                edgecolors=c[n], s=80, alpha=0.3,
+                                label='Frame {}'.format(n))
+
+                # Plot the grouping center
+                ax.scatter(*clusters.T, marker='+', c='k', s=100, lw=2,
+                            label='Centroids')
+
+                # Put RA and Dec on axis ticks
+                # xlabels = [item.get_text() for item in ax.get_xticklabels()]
+                # ylabels = [float(item.get_text()) for item in ax.get_yticklabels()]
+                # labels = np.array([(x,y) for x,y in zip(xlabels,ylabels)], 
+                #                   dtype=[('x', '>f4'), ('y', '>f4')])
+                # xlabels, ylabels  = get_coordinates(labels, meta)
+                # ax.set_xticklabels(labels)
+
+            elif plot:
+
+                # Draw figure
+                f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, sharex='col', sharey='row')
+
+                # Populate the frames
+                axes = [ax1,ax2,ax3,ax4]
+                for n, frame in zip(frames.keys['frame'], frames):
+
+                    # Pull out the coordinates
+                    xy = np.array(frame[['x','y']])
+
+                    # Plot it!
+                    axes[n].scatter(xy['x'], xy['y'])
+
+                    # Plot the cutouts too?!
+
+                # Add labels
+                for n in range(4):
+                    axes[n].set_title('Frame {}'.format(n))
+
+            return subject
+
+        else:
+            print('No classifications for subject',subject_id)
             
-            # plt.figure()
-            
-            c = ['b', 'g', 'r', 'm']
-            for n, frame in zip(frames.keys['frame'], frames):
-                
-                # Pull out the coordinates
-                xy = np.array(frame[['x','y']])
-    
-                # Plot it!
-                plt.scatter(xy['x'], xy['y'], facecolors='none', 
-                            edgecolors=c[n], s=80, alpha=0.3,
-                            label='Frame {}'.format(n))
-            
-            # Plot the grouping center
-            plt.scatter(*clusters.T, marker='+', c='k', s=100, lw=2,
-                        label='Centroids')
-            
-        elif plot:
-        
-            # Draw figure
-            f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, sharex='col', sharey='row')
-            
-            # Populate the frames
-            axes = [ax1,ax2,ax3,ax4]
-            for n, frame in zip(frames.keys['frame'], frames):
-                
-                # Pull out the coordinates
-                xy = np.array(frame[['x','y']])
-                
-                # Plot it!
-                axes[n].scatter(xy['x'], xy['y'])
-                
-                # Plot the cutouts too?!
-                
-            # Add labels
-            for n in range(4):
-                axes[n].set_title('Frame {}'.format(n))
-                
-        return subject
-        
     def get_retired(self, retirement=15):
         """
         ID the subjects that are retired
         """
-        retire = []
-        for sub in self.subjects:
-            subject = self.get_subject(sub, plot=False)
-            
-            class_ids = list(set(subject['classification_id']))
-            
-            if len(class_ids)>=retirement:
-                retire.append(sub)
+        # Get all the clicked subjects
+        clicks = np.array(self.data['subject_ids'])
         
-        self.retired = retire
+        # Count how many clicks for each subject
+        counts = np.bincount(clicks)
+        idx = np.nonzero(counts)[0]
         
-        # # Group by subject_id
-        # grouped = self.data.group_by('subject_ids').groups
-        #
-        # # Count how many classifications for each subject
-        # counted = np.diff(grouped.indices)
-        #
-        # # Get indices of those that make cutoff
-        # filtered = grouped[np.where(counted>=retirement)]
-        #
-        # # Get ids of retired subjects
-        # self.retired = filtered.groups.keys
-        #
+        # Store the subjects with the appropriate number of clicks
+        self.retired = [id for id,n in zip(idx,counts[idx]) if n>=retirement]
+        
+        print('Retired:',len(self.retired))
 
 def get_coordinates(coords, metadata):
     """
@@ -174,10 +175,10 @@ def get_coordinates(coords, metadata):
     # note that use the subtile center for this purpose
     # ratile is the ra of the tile center
     # dectile is the dec of the tile center
-    ratile = metadata['RA']
-    dectile = metadata['Dec']
+    ratile, dectile = [metadata['RA'],metadata['Dec']] or \
+        list(map(float,metadata['VizieR'].split('c=')[1].split('+')))
+    
     tilename = metadata['images'].split(',')[0]
-    print(ratile,dectile)
     
     # Make arrays of the x and y coordinates
     x, y = np.asarray(coords['x']), np.asarray(coords['y'])
@@ -211,16 +212,10 @@ def get_coordinates(coords, metadata):
     ra = ratile + np.arctan(xp*np.sin(cg),rho*cosdec*np.cos(cg)-yp*sindec*np.sin(cg))/pio180 
 
     # now flip around the RA and dec as needed
-    if dec > 90.0:
-        dec = 180.0-dec
-        ra = ra+180.0
-    elif dec < -90.0:
-        dec = -180.0-dec
-        ra = ra+180.0
-    
-    if ra < 0:
-        ra = ra+360.0
-    ra = ra % 360.0
+    dec = [180.0-d if d>90.0 else -180.0-d if d<-90 else d for d in dec]
+    ra = [r+180.0 if d>90.0 or d<-90 else r for r,d in zip(ra,dec)]
+    ra = [r+360.0 if r<0 else r for r in ra]
+    ra = [r%360.0 for r in ra]
     
     return (ra, dec)
 
@@ -267,7 +262,7 @@ def cluster_centers(X, eps=20, min_samples=3):
     
     return clusters
 
-def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_out='subjects.csv'):
+def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_out='subjects.txt'):
     """
     Generates a readable CSV file from exported Zooniverse data
     
@@ -296,19 +291,21 @@ def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_o
             vizier = sub.metadata.get('!VizieR')
             irsa = sub.metadata.get('!IRSA Finder Chart')
             images = ', '.join([sub.metadata.get('image{}'.format(n)) for n in [0,1,2,3]])
-            mjd = 1#[float(i) for i in sub.metadata.get('Modified Julian Dates of Each Epoch')]
-            center = 1#[float(i) for i in sub.metadata.get('subtile center')]
-            tilenum = 1#int(sub.metadata.get('Tile Number'))
-            nearest = ', '.join(sub.metadata.get('id numbers of nearest subtiles'))
-                    
-            out.append([id, ra, dec, simbad, vizier, irsa, images, mjd, center, tilenum, nearest])
+            mjd = sub.metadata.get('Modified Julian Dates of Each Epoch')
+            center = sub.metadata.get('subtile center')
+            tilenum = int(sub.metadata.get('Tile Number'))
+            nearest = sub.metadata.get('id numbers of nearest subtiles')
+            entry = [id, ra, dec, simbad, vizier, irsa, images, mjd, center, tilenum, nearest]
+
+            if entry not in out:
+                out.append(entry)
         except TypeError:
             pass
     
     # Write the data to CSV
     cols = ['subject_id', 'RA', 'Dec', 'SIMBAD', 'VizieR', 'IRSA', 'images', 'MJD', 'Center', 'Tilenum', 'Nearest']
-    out = Table(np.array(out), names=cols)
-    out.write(markfile_out)
+    out = Table(np.array(out), names=cols, dtype=[int,float,float,str,str,str,str,str,str,int,str])
+    out.write(markfile_out, format='ascii.fixed_width')
     
 def classification_CSV(classfile_in='backyard-worlds-planet-9-classifications.csv', markfile_out='classifications.csv'):
     """
