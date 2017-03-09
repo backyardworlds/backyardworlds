@@ -1,14 +1,26 @@
 import sys
+import os
 import pandas as pd
 import numpy as np
 import json
+import glob
+import warnings
 import matplotlib.pyplot as plt
+import astropy.coordinates as coords
+import astropy.units as q
+import astropy.table as at
+from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import DBSCAN
 from sklearn import metrics
-from sklearn.preprocessing import StandardScaler
 from astropy.io import ascii
+from astropy.io import fits
 from astropy.time import Time
 from astropy.table import Table
+from astroquery.irsa import Irsa
+from astroquery.vizier import Vizier
+from astroquery.simbad import Simbad
+
+warnings.filterwarnings("ignore")
 
 class ClassificationData(object):
     def __init__(self, classification_file, subject_file, start_date='2017-02-15 12:00:00'):
@@ -26,7 +38,11 @@ class ClassificationData(object):
         
         """
         # Read the classification data into a table
-        self.data = ascii.read(classification_file)
+        print('Loading classifications...')
+        #self.data = ascii.read(classification_file, format='csv')
+        data_files = glob.glob(classification_file.replace('.csv','*'))
+        data = [ascii.read(f, format='csv') for f in data_files]
+        self.data = at.vstack(data)
         
         # Convert date string to astropy.time.Time
         dates = [Time(t.replace(' UTC','')) for t in self.data['created_at']]
@@ -46,9 +62,13 @@ class ClassificationData(object):
         self.retired = []
         
         # Read the subject metadata into a table
-        self.subjects = ascii.read(subject_file, format='fixed_width')
-        
-    def get_subject(self, subject_id, plot='composite'):
+        print('Loading subjects...')
+        #self.subjects = ascii.read(subject_file, format='fixed_width')
+        subject_files = glob.glob(subject_file.replace('.txt','*'))
+        subjects = [ascii.read(f, format='fixed_width') for f in subject_files]
+        self.subjects = at.vstack(subjects)
+                
+    def get_subject(self, subject_id, radius=20, num=4, plot='composite'):
         """
         Get the classification data for a particular subject
         
@@ -71,6 +91,11 @@ class ClassificationData(object):
         if subject:
             # Group by frame
             frames = subject.group_by('frame').groups
+            
+            # Print number of clicks in each group
+            for n,f in enumerate(frames):
+                print('Frame {} clicks:'.format(n),len(f))
+            print('\n')
 
             # Get all the click locations
             xy = np.array(subject[['x','y']])
@@ -79,7 +104,18 @@ class ClassificationData(object):
             coords = get_coordinates(xy, meta)
 
             # Find the centers of the sufficiently dense clusters
-            clusters = cluster_centers(xy)
+            clusters = cluster_centers(xy, radius=radius, num=num)
+            
+            # Search catalogs at cluster center
+            results = []
+            for x,y in clusters:
+                cluster = np.array([(x,y)], dtype=[('x',float),('y',float)])
+                ra, dec = get_coordinates(cluster, meta)
+                results.append(catalog_search(ra[0], dec[0]))
+            
+            if results:
+                results = at.vstack(results)
+                results.pprint(max_width=120)
 
             if plot=='composite':
 
@@ -97,8 +133,15 @@ class ClassificationData(object):
                                 label='Frame {}'.format(n))
 
                 # Plot the grouping center
-                ax.scatter(*clusters.T, marker='+', c='k', s=100, lw=2,
-                            label='Centroids')
+                try:
+                    ax.scatter(*clusters.T, marker='+', c='k', s=100, lw=2,
+                               label='Centroids')
+                    
+                    # Number the clusters for reference
+                    for n,(x,y) in enumerate(clusters):
+                        plt.annotate(str(n), xy=(x,y), xytext=(x+10, y+10))
+                except:
+                    pass
 
                 # Put RA and Dec on axis ticks
                 # xlabels = [item.get_text() for item in ax.get_xticklabels()]
@@ -137,6 +180,11 @@ class ClassificationData(object):
     def get_retired(self, retirement=15):
         """
         ID the subjects that are retired
+        
+        Parameters
+        ----------
+        retirement: int
+            The number of clicks necessary to retire a subject
         """
         # Get all the clicked subjects
         clicks = np.array(self.data['subject_ids'])
@@ -150,6 +198,52 @@ class ClassificationData(object):
         
         print('Retired:',len(self.retired))
 
+def catalog_search(ra, dec, radius=10):
+    """
+    Search Simbad, 2MASS, and WISE catalogs for object
+    
+    Parameters
+    ----------
+    ra: float
+        The right ascension
+    dec: float
+        The declination
+    radius: float
+        The search radius
+        
+    Returns
+    -------
+    astropy.table.Table
+        A table of the search results
+    """
+    c = coords.ICRS(ra=ra*q.deg, dec=dec*q.deg)
+
+    # Query 2MASS and WISE
+    WISE = Vizier.query_region(c, radius=radius*q.arcsec, catalog=['II/328/allwise'])
+    MASS = Vizier.query_region(c, radius=radius*q.arcsec, catalog=['II/246/out'])
+    SIMB = Simbad.query_region(c, radius=(radius+10)*q.arcsec)
+
+    if MASS:
+        J, H, K = [MASS[0][m][0] for m in ['Jmag','Hmag','Kmag']]
+    else:
+        J, H, K = [np.nan]*3
+        
+    if WISE:
+        W1, W2, W3, W4 = [WISE[0][m][0] for m in ['W1mag','W2mag','W3mag','W4mag']]
+    else:
+        W1, W2, W3, W4 = [np.nan]*4
+    
+    if SIMB:
+        name = SIMB['MAIN_ID'][0]
+    else:
+        name = 'Not in Simbad'
+    
+    result = at.Table(np.array([name, ra, dec, J, H, K, W1, W2, W3, W4]), masked=True, 
+                   names=['name','ra','dec','J','H','K','W1','W2','W3','W4'],
+                   dtype=[str, float, float, float, float, float, float, float, float, float])
+    
+    return result
+
 def get_coordinates(coords, metadata):
     """
     Calculates the RA and Dec values of the given coords
@@ -159,7 +253,7 @@ def get_coordinates(coords, metadata):
     ----------
     coords: array-like
         The (x,y) pixel locations to convert to (RA, Dec)
-    metadata: astropy.table.row.Row
+    metadata: astropy.table.row.Row, dict
         The metadata for the given subject
     
     Returns
@@ -171,13 +265,11 @@ def get_coordinates(coords, metadata):
     pio180 = np.pi/180.0            # This is PI divided by 180.
     pixrad = (2.75/3600)*pio180     # unWISE pixel, in radians
 
-    #  Next we'll need the ra and dec of center of the tile in question
+    # Next we'll need the ra and dec of center of the tile in question
     # note that use the subtile center for this purpose
     # ratile is the ra of the tile center
     # dectile is the dec of the tile center
-    ratile, dectile = [metadata['RA'],metadata['Dec']] or \
-        list(map(float,metadata['VizieR'].split('c=')[1].split('+')))
-    
+    ratile, dectile = metadata['RA'], metadata['Dec']
     tilename = metadata['images'].split(',')[0]
     
     # Make arrays of the x and y coordinates
@@ -216,21 +308,21 @@ def get_coordinates(coords, metadata):
     ra = [r+180.0 if d>90.0 or d<-90 else r for r,d in zip(ra,dec)]
     ra = [r+360.0 if r<0 else r for r in ra]
     ra = [r%360.0 for r in ra]
-    
+
     return (ra, dec)
 
-def cluster_centers(X, eps=20, min_samples=3):
+def cluster_centers(coords, radius=20, num=3):
     """
     Calculate the centers of the point clusters given the
-    radius (eps) and minimum number of points (min_samples)
+    radius and minimum number of points
     
     Parameters
     ----------
-    X: array-like
+    coords: array-like
         The list of (x,y) coordinates of all clicks
-    eps: int
+    radius: int
         The distance threshold for cluster membership
-    min_samples: int
+    num: int
         The minimum number of points in a cluster to be
         considered interesting
     
@@ -239,8 +331,8 @@ def cluster_centers(X, eps=20, min_samples=3):
     np.ndarray
         An array of the cluster centers
     """
-    X = np.array([list(x) for x in X])
-    db = DBSCAN(eps=eps, min_samples=min_samples).fit(X)
+    coords = np.array([list(x) for x in coords])
+    db = DBSCAN(eps=radius, min_samples=num).fit(coords)
 
     core_samples_mask = np.zeros_like(db.labels_, dtype=bool)
     core_samples_mask[db.core_sample_indices_] = True
@@ -253,16 +345,18 @@ def cluster_centers(X, eps=20, min_samples=3):
     clusters = []
     for k in unique_labels:
         class_member_mask = (labels == k)
-        xy = X[class_member_mask & core_samples_mask]
-        if len(xy)>min_samples:
+        xy = coords[class_member_mask & core_samples_mask]
+        clicks = len(xy)
+        if clicks>num:
             clusters.append(xy)
+            counts.append(clicks)
     
     # Get 2D mean of each cluster
     clusters = np.asarray([np.mean(c, axis=0) for c in clusters])
     
-    return clusters
+    return clusters, clicks
 
-def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_out='subjects.txt'):
+def subject_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyard-worlds-planet-9-subjects.csv', markfile_out='subjects.txt', tile2subtile='neo1_meta-atlas.trim.fits'):
     """
     Generates a readable CSV file from exported Zooniverse data
     
@@ -275,39 +369,52 @@ def subject_CSV(classfile_in='backyard-worlds-planet-9-subjects.csv', markfile_o
     """
     # Read in subject CSV and expand JSON fields
     subjects = pd.read_csv(classfile_in)
+    print('Subjects:',len(subjects))
     subjects['metadata'] = [json.loads(q) for q in subjects.metadata]
     subjects['locations'] = [json.loads(q) for q in subjects.locations]
     
     # ['!IRSA Finder Chart', 'image3', '!VizieR', 'Tile Number', 'id', 'image0', 'Modified Julian Dates of Each Epoch', 'id numbers of nearest subtiles', 'subtile center', '!SIMBAD', 'image1', 'image2']
     
+    # Get the RA and Dec of each tile center
+    coord_lookup = fits.getdata(tile2subtile, 1)
+    
     # Pull out the metadata for each entry
-    out = []
+    clists = []
+    clist = []
     for index,sub in subjects.iterrows():
         try:
             id = int(sub.subject_id)
-            ra = sub.metadata.get('RA')
-            dec = sub.metadata.get('dec')
+            #ra = sub.metadata.get('RA')
+            #dec = sub.metadata.get('dec')
             simbad = sub.metadata.get('!SIMBAD')
             vizier = sub.metadata.get('!VizieR')
             irsa = sub.metadata.get('!IRSA Finder Chart')
             images = ', '.join([sub.metadata.get('image{}'.format(n)) for n in [0,1,2,3]])
             mjd = sub.metadata.get('Modified Julian Dates of Each Epoch')
             center = sub.metadata.get('subtile center')
-            tilenum = int(sub.metadata.get('Tile Number'))
+            tilenum = int(sub.subject_set_id)
+            ra, dec = coord_lookup[tilenum]
             nearest = sub.metadata.get('id numbers of nearest subtiles')
             entry = [id, ra, dec, simbad, vizier, irsa, images, mjd, center, tilenum, nearest]
 
-            if entry not in out:
-                out.append(entry)
+            if entry not in clist:
+                clist.append(entry)
+        
         except TypeError:
-            pass
-    
+            continue
+        
+        if len(clist)>=50000 or index==len(subjects):
+            clists.append(clist)
+            clist = []
+            
     # Write the data to CSV
-    cols = ['subject_id', 'RA', 'Dec', 'SIMBAD', 'VizieR', 'IRSA', 'images', 'MJD', 'Center', 'Tilenum', 'Nearest']
-    out = Table(np.array(out), names=cols, dtype=[int,float,float,str,str,str,str,str,str,int,str])
-    out.write(markfile_out, format='ascii.fixed_width')
+    for n,clist in enumerate(clists):
+        print(clist)
+        cols = ['subject_id', 'RA', 'Dec', 'SIMBAD', 'VizieR', 'IRSA', 'images', 'MJD', 'Center', 'Tilenum', 'Nearest']
+        out = Table(np.array(clist), names=cols, dtype=[int,float,float,str,str,str,str,str,str,int,str])
+        out.write(markfile_out.replace('.txt','{}.txt'.format(n)), format='ascii.fixed_width')
     
-def classification_CSV(classfile_in='backyard-worlds-planet-9-classifications.csv', markfile_out='classifications.csv'):
+def classification_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyard-worlds-planet-9-classifications.csv', markfile_out='classifications.csv'):
     """
     Generates a readable CSV file from exported Zooniverse data
     
@@ -337,7 +444,8 @@ def classification_CSV(classfile_in='backyard-worlds-planet-9-classifications.cs
 
     # Output markings from classifications in iclass to new list of dictionaries (prep for pandas dataframe)
     # Applicable for workflows with marking task as first task, and outputs data for circular markers (x,y,r)
-    clist=[]
+    clists = []
+    clist = []
     for index, c in iclass.iterrows():
         if c['n_markings'] > 0:
             # Note: index of annotations_json corresponds to task number (i.e., 0)
@@ -347,10 +455,17 @@ def classification_CSV(classfile_in='backyard-worlds-planet-9-classifications.cs
                 clist.append({'classification_id':c.classification_id, 'user_name':c.user_name, 'user_id':c.user_id,
                               'created_at':c.created_at, 'subject_ids':c.subject_ids, 'tool':q['tool'], 
                               'tool_label':q['tool_label'], 'x':q['x'], 'y':q['y'], 'frame':q['frame']})
+                
+        if len(clist)<500000:
+            pass
+        else:
+            clists.append(clist)
+            clist = []
 
-    # Output list of dictionaries to pandas dataframe and export to CSV.
-    col_order = ['classification_id','user_name','user_id','created_at','subject_ids',
-               'tool','tool_label','x','y','frame']
-    out = pd.DataFrame(clist)[col_order]
-    out.to_csv(markfile_out, index_label='mark_id')
+    for n,clist in enumerate(clists):
+        # Output list of dictionaries to pandas dataframe and export to CSV.
+        col_order = ['classification_id','user_name','user_id','created_at','subject_ids',
+                   'tool','tool_label','x','y','frame']
+        out = pd.DataFrame(clist)[col_order]
+        out.to_csv(markfile_out.replace('.csv','{}.csv'.format(n)), index_label='mark_id')
     
