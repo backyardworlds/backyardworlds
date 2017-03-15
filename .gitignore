@@ -1,5 +1,4 @@
 *.pyc
-backyard-worlds-planet-9-classifications.csv
 __pycache__
 __pycache__/*
 .DS_Store

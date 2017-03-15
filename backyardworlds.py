@@ -41,7 +41,7 @@ class ClassificationData(object):
         print('Loading classifications...')
         #self.data = ascii.read(classification_file, format='csv')
         data_files = glob.glob(classification_file.replace('.csv','*'))
-        data = [ascii.read(f, format='csv') for f in data_files]
+        data = [ascii.read(f, format='fixed_width') for f in data_files]
         self.data = at.vstack(data)
         
         # Convert date string to astropy.time.Time
@@ -68,7 +68,7 @@ class ClassificationData(object):
         subjects = [ascii.read(f, format='fixed_width') for f in subject_files]
         self.subjects = at.vstack(subjects)
                 
-    def get_subject(self, subject_id, radius=20, num=4, plot='composite'):
+    def get_subject(self, subject_id, radius=20, num=4, plot=True):
         """
         Get the classification data for a particular subject
         
@@ -94,7 +94,8 @@ class ClassificationData(object):
             
             # Print number of clicks in each group
             for n,f in enumerate(frames):
-                print('Frame {} clicks:'.format(n),len(f))
+                user_list = len(list(set(f['user_name'])))
+                print('Frame {} has {} clicks from {} users.'.format(n,len(f),user_list))
             print('\n')
 
             # Get all the click locations
@@ -104,20 +105,22 @@ class ClassificationData(object):
             coords = get_coordinates(xy, meta)
 
             # Find the centers of the sufficiently dense clusters
-            clusters = cluster_centers(xy, radius=radius, num=num)
+            clusters, counts = cluster_centers(xy, radius=radius, num=num)
             
             # Search catalogs at cluster center
             results = []
-            for x,y in clusters:
+            for idx,(x,y) in enumerate(clusters):
                 cluster = np.array([(x,y)], dtype=[('x',float),('y',float)])
                 ra, dec = get_coordinates(cluster, meta)
-                results.append(catalog_search(ra[0], dec[0]))
+                table = catalog_search(ra[0], dec[0])
+                table['Clicks'] = counts[idx]
+                results.append(table)
             
             if results:
                 results = at.vstack(results)
                 results.pprint(max_width=120)
 
-            if plot=='composite':
+            if plot:
 
                 fig, ax = plt.subplots()
 
@@ -150,27 +153,6 @@ class ClassificationData(object):
                 #                   dtype=[('x', '>f4'), ('y', '>f4')])
                 # xlabels, ylabels  = get_coordinates(labels, meta)
                 # ax.set_xticklabels(labels)
-
-            elif plot:
-
-                # Draw figure
-                f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, sharex='col', sharey='row')
-
-                # Populate the frames
-                axes = [ax1,ax2,ax3,ax4]
-                for n, frame in zip(frames.keys['frame'], frames):
-
-                    # Pull out the coordinates
-                    xy = np.array(frame[['x','y']])
-
-                    # Plot it!
-                    axes[n].scatter(xy['x'], xy['y'])
-
-                    # Plot the cutouts too?!
-
-                # Add labels
-                for n in range(4):
-                    axes[n].set_title('Frame {}'.format(n))
 
             return subject
 
@@ -342,7 +324,7 @@ def cluster_centers(coords, radius=20, num=3):
     unique_labels = set(labels)
     
     # Group clusters
-    clusters = []
+    clusters, counts = [], []
     for k in unique_labels:
         class_member_mask = (labels == k)
         xy = coords[class_member_mask & core_samples_mask]
@@ -354,9 +336,9 @@ def cluster_centers(coords, radius=20, num=3):
     # Get 2D mean of each cluster
     clusters = np.asarray([np.mean(c, axis=0) for c in clusters])
     
-    return clusters, clicks
+    return clusters, counts
 
-def subject_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyard-worlds-planet-9-subjects.csv', markfile_out='subjects.txt', tile2subtile='neo1_meta-atlas.trim.fits'):
+def subject_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyard-worlds-planet-9-subjects.csv', markfile_out='data/subjects.txt', tile2subtile='data/neo1_meta-atlas.trim.fits'):
     """
     Generates a readable CSV file from exported Zooniverse data
     
@@ -372,8 +354,6 @@ def subject_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyar
     print('Subjects:',len(subjects))
     subjects['metadata'] = [json.loads(q) for q in subjects.metadata]
     subjects['locations'] = [json.loads(q) for q in subjects.locations]
-    
-    # ['!IRSA Finder Chart', 'image3', '!VizieR', 'Tile Number', 'id', 'image0', 'Modified Julian Dates of Each Epoch', 'id numbers of nearest subtiles', 'subtile center', '!SIMBAD', 'image1', 'image2']
     
     # Get the RA and Dec of each tile center
     coord_lookup = fits.getdata(tile2subtile, 1)
@@ -397,24 +377,25 @@ def subject_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyar
             nearest = sub.metadata.get('id numbers of nearest subtiles')
             entry = [id, ra, dec, simbad, vizier, irsa, images, mjd, center, tilenum, nearest]
 
-            if entry not in clist:
-                clist.append(entry)
+            clist.append(entry)
         
         except TypeError:
             continue
         
-        if len(clist)>=50000 or index==len(subjects):
+        if len(clist)>=50000:
             clists.append(clist)
             clist = []
+    
+    if clist:
+        clists.append(clist)
             
     # Write the data to CSV
     for n,clist in enumerate(clists):
-        print(clist)
         cols = ['subject_id', 'RA', 'Dec', 'SIMBAD', 'VizieR', 'IRSA', 'images', 'MJD', 'Center', 'Tilenum', 'Nearest']
         out = Table(np.array(clist), names=cols, dtype=[int,float,float,str,str,str,str,str,str,int,str])
         out.write(markfile_out.replace('.txt','{}.txt'.format(n)), format='ascii.fixed_width')
     
-def classification_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyard-worlds-planet-9-classifications.csv', markfile_out='classifications.csv'):
+def classification_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/backyard-worlds-planet-9-classifications.csv', markfile_out='data/classifications.txt'):
     """
     Generates a readable CSV file from exported Zooniverse data
     
@@ -428,44 +409,47 @@ def classification_CSV(classfile_in='/Users/jfilippazzo/Desktop/backyard worlds/
     """
     # Read in classification CSV and expand JSON fields
     classifications = pd.read_csv(classfile_in)
-    classifications['metadata_json'] = [json.loads(q) for q in classifications.metadata]
+    print('Classifications:',len(classifications))
+    #classifications['metadata_json'] = [json.loads(q) for q in classifications.metadata]
     classifications['annotations_json'] = [json.loads(q) for q in classifications.annotations]
-    classifications['subject_data_json'] = [json.loads(q) for q in classifications.subject_data]
+    #classifications['subject_data_json'] = [json.loads(q) for q in classifications.subject_data]
 
-    # Calculate number of markings per classification
-    # Note: index of annotations_json ("q" here) corresponds to task number (i.e., 0)
-    classifications['n_markings'] = [ len(q[0]['value']) for q in classifications.annotations_json ]
-
-    ### Classification Selection / CURRENT SETTING: most recent workflow version
-    # OPTION 1: Select only classifications from most recent workflow version
-    iclass = classifications[classifications.workflow_version == classifications['workflow_version'].max()]
-    # OPTION 2: Select most/all valid classifications using workflow_id and workflow_version
-    #iclass = classifications[(classifications['workflow_id'] == 1687) & (classifications['workflow_version'] > 40)]
-
-    # Output markings from classifications in iclass to new list of dictionaries (prep for pandas dataframe)
-    # Applicable for workflows with marking task as first task, and outputs data for circular markers (x,y,r)
     clists = []
     clist = []
-    for index, c in iclass.iterrows():
-        if c['n_markings'] > 0:
-            # Note: index of annotations_json corresponds to task number (i.e., 0)
-            for q in c.annotations_json[0]['value']:
-            
-                # OPTIONAL EXPANSION: could use if statement here to split marker types
-                clist.append({'classification_id':c.classification_id, 'user_name':c.user_name, 'user_id':c.user_id,
-                              'created_at':c.created_at, 'subject_ids':c.subject_ids, 'tool':q['tool'], 
-                              'tool_label':q['tool_label'], 'x':q['x'], 'y':q['y'], 'frame':q['frame']})
+    for index, c in classifications.iterrows():
                 
-        if len(clist)<500000:
-            pass
-        else:
-            clists.append(clist)
-            clist = []
+        for q in c.annotations_json:
 
+            try:
+                for i in q['value']:
+
+                    try:
+                        id = c.classification_id
+                        user = c.user_name
+                        user_id = 1 #c.user_id
+                        created = c.created_at
+                        sub_id = c.subject_ids
+                        x = float(i.get('x'))
+                        y = float(i.get('y'))
+                        frame = int(i.get('frame'))
+                        entry = [id, user, user_id, created, sub_id, x, y, frame]
+                        clist.append(entry)
+
+                    except:
+                        continue
+            except:
+                continue
+
+            if len(clist)>=300000:
+                clists.append(clist)
+                clist = []
+    
+    if clist:
+        clists.append(clist)
+
+    # Write the data to CSV
     for n,clist in enumerate(clists):
-        # Output list of dictionaries to pandas dataframe and export to CSV.
-        col_order = ['classification_id','user_name','user_id','created_at','subject_ids',
-                   'tool','tool_label','x','y','frame']
-        out = pd.DataFrame(clist)[col_order]
-        out.to_csv(markfile_out.replace('.csv','{}.csv'.format(n)), index_label='mark_id')
+        cols = ['classification_id','user_name','user_id','created_at','subject_ids','x','y','frame']
+        out = Table(np.array(clist), names=cols, dtype=[int,str,int,str,int,float,float,int])
+        out.write(markfile_out.replace('.txt','{}.txt'.format(n)), format='ascii.fixed_width')    
     
