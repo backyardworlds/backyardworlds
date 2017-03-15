@@ -68,7 +68,7 @@ class ClassificationData(object):
         subjects = [ascii.read(f, format='fixed_width') for f in subject_files]
         self.subjects = at.vstack(subjects)
                 
-    def get_subject(self, subject_id, radius=20, num=4, plot=True):
+    def get_subject(self, subject_id, radius=20, num=4, plot=True, verbose=False):
         """
         Get the classification data for a particular subject
         
@@ -87,6 +87,10 @@ class ClassificationData(object):
 
         # Get subject metadata
         meta = self.subjects[self.subjects['subject_id']==subject_id][0]
+        
+        # Print some stuff
+        print('Subject id:',subject_id,'\n')
+        print('Users:\n','\n '.join(list(set(subject['user_name']))),'\n')
         
         if subject:
             # Group by frame
@@ -113,7 +117,7 @@ class ClassificationData(object):
                 cluster = np.array([(x,y)], dtype=[('x',float),('y',float)])
                 ra, dec = get_coordinates(cluster, meta)
                 table = catalog_search(ra[0], dec[0])
-                table['Clicks'] = counts[idx]
+                table['#'] = counts[idx]
                 results.append(table)
             
             if results:
@@ -122,7 +126,7 @@ class ClassificationData(object):
 
             if plot:
 
-                fig, ax = plt.subplots()
+                fig, ax = plt.subplots(figsize=(5,5))
 
                 c = ['b', 'g', 'r', 'm']
                 for n, frame in zip(frames.keys['frame'], frames):
@@ -134,6 +138,9 @@ class ClassificationData(object):
                     ax.scatter(xy['x'], xy['y'], facecolors='none', 
                                 edgecolors=c[n], s=80, alpha=0.3,
                                 label='Frame {}'.format(n))
+                    
+                    ax.set_xlim(0,512)
+                    ax.set_ylim(0,512)
 
                 # Plot the grouping center
                 try:
@@ -153,7 +160,7 @@ class ClassificationData(object):
                 #                   dtype=[('x', '>f4'), ('y', '>f4')])
                 # xlabels, ylabels  = get_coordinates(labels, meta)
                 # ax.set_xticklabels(labels)
-
+            
             return subject
 
         else:
@@ -220,9 +227,13 @@ def catalog_search(ra, dec, radius=10):
     else:
         name = 'Not in Simbad'
     
-    result = at.Table(np.array([name, ra, dec, J, H, K, W1, W2, W3, W4]), masked=True, 
-                   names=['name','ra','dec','J','H','K','W1','W2','W3','W4'],
-                   dtype=[str, float, float, float, float, float, float, float, float, float])
+    # result = at.Table(np.array([name, ra, dec, J, H, K, W1, W2, W3, W4]), masked=True, 
+    #                names=['name','ra','dec','J','H','K','W1','W2','W3','W4'],
+    #                dtype=[str, float, float, float, float, float, float, float, float, float])
+    
+    result = at.Table(np.array([name, ra, dec, J, H, K, W1, W2]), masked=True, 
+                   names=['name','ra','dec','J','H','K','W1','W2'],
+                   dtype=[str, float, float, float, float, float, float, float])
     
     return result
 
