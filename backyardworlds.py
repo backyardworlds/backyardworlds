@@ -38,7 +38,7 @@ class ClassificationData(object):
         
         """
         # Read the classification data into a table
-        print('Loading classifications...')
+        print('Loading classifications... This takes a few minutes!')
         #self.data = ascii.read(classification_file, format='csv')
         data_files = glob.glob(classification_file.replace('.csv','*'))
         data = [ascii.read(f, format='fixed_width') for f in data_files]
@@ -62,7 +62,7 @@ class ClassificationData(object):
         self.retired = []
         
         # Read the subject metadata into a table
-        print('Loading subjects...')
+        print('Loading subjects... This also takes a few minutes!')
         #self.subjects = ascii.read(subject_file, format='fixed_width')
         subject_files = glob.glob(subject_file.replace('.txt','*'))
         subjects = [ascii.read(f, format='fixed_width') for f in subject_files]
@@ -86,7 +86,11 @@ class ClassificationData(object):
         subject = self.data[self.data['subject_ids']==subject_id]
 
         # Get subject metadata
-        meta = self.subjects[self.subjects['subject_id']==subject_id][0]
+        try:
+            meta = self.subjects[self.subjects['subject_id']==subject_id][0]
+        except IndexError:
+            print('No classifications for subject',subject_id)
+            return            
         
         # Print some stuff
         print('Subject id:',subject_id,'\n')
@@ -118,11 +122,13 @@ class ClassificationData(object):
                 ra, dec = get_coordinates(cluster, meta)
                 table = catalog_search(ra[0], dec[0])
                 table['#'] = counts[idx]
+                #table['W1-W2'] = table['W1']-table['W2']
+                #table['W2-W3'] = table['W2']-table['W3']
                 results.append(table)
             
             if results:
                 results = at.vstack(results)
-                results.pprint(max_width=120)
+                results[[c for c in results.colnames if not c.startswith('e_')]].pprint(max_width=120)
 
             if plot:
 
@@ -160,7 +166,7 @@ class ClassificationData(object):
                 #                   dtype=[('x', '>f4'), ('y', '>f4')])
                 # xlabels, ylabels  = get_coordinates(labels, meta)
                 # ax.set_xticklabels(labels)
-            
+            make_SED(results)
             return subject
 
         else:
@@ -210,33 +216,82 @@ def catalog_search(ra, dec, radius=10):
     # Query 2MASS and WISE
     WISE = Vizier.query_region(c, radius=radius*q.arcsec, catalog=['II/328/allwise'])
     MASS = Vizier.query_region(c, radius=radius*q.arcsec, catalog=['II/246/out'])
+    SDSS = Vizier.query_region(c, radius=radius*q.arcsec, catalog=['V/139/sdss9'])
     SIMB = Simbad.query_region(c, radius=(radius+10)*q.arcsec)
+    
+    # Get the bands
+    SDSSbands = ['umag','e_umag','gmag','e_gmag','rmag','e_rmag','imag','e_imag','zmag','e_zmag']
+    MASSbands = ['Jmag','e_Jmag','Hmag','e_Hmag','Kmag','e_Kmag']
+    WISEbands = ['W1mag','e_W1mag','W2mag','e_W2mag','W3mag','e_W3mag','W4mag','e_W4mag']
 
+    # Magnitude arrays
+    SDSSmags = [np.nan]*len(SDSSbands)
+    MASSmags = [np.nan]*len(MASSbands)
+    WISEmags = [np.nan]*len(WISEbands)
+    
+    if SDSS:
+        SDSSmags = list(map(lambda x:x if x!='--' else np.nan, SDSS[0][SDSSbands][0].as_void()))
+    
     if MASS:
-        J, H, K = [MASS[0][m][0] for m in ['Jmag','Hmag','Kmag']]
-    else:
-        J, H, K = [np.nan]*3
+        MASSmags = list(map(lambda x:x if x!='--' else np.nan, MASS[0][MASSbands][0].as_void()))
         
     if WISE:
-        W1, W2, W3, W4 = [WISE[0][m][0] for m in ['W1mag','W2mag','W3mag','W4mag']]
-    else:
-        W1, W2, W3, W4 = [np.nan]*4
-    
+        WISEmags = list(map(lambda x:x if x!='--' else np.nan, WISE[0][WISEbands][0].as_void()))
+        
     if SIMB:
         name = SIMB['MAIN_ID'][0]
     else:
-        name = 'Not in Simbad'
+        name = '--'
     
-    # result = at.Table(np.array([name, ra, dec, J, H, K, W1, W2, W3, W4]), masked=True, 
-    #                names=['name','ra','dec','J','H','K','W1','W2','W3','W4'],
-    #                dtype=[str, float, float, float, float, float, float, float, float, float])
-    
-    result = at.Table(np.array([name, ra, dec, J, H, K, W1, W2]), masked=True, 
-                   names=['name','ra','dec','J','H','K','W1','W2'],
-                   dtype=[str, float, float, float, float, float, float, float])
+    result = at.Table(np.array([name, ra, dec]+SDSSmags+MASSmags+WISEmags), masked=True, 
+                   names=['name','ra','dec']+[b.replace('mag','') for b in SDSSbands+MASSbands+WISEbands],
+                   dtype=[str]+[float]*26)
     
     return result
 
+def make_SED(results):
+    """
+    Plot a photometric SED of the target
+    """
+    for source in results:
+        # Names and effective wavelengths
+        bands = ['u','g','r','i','z','J','H','K','W1','W2','W3','W4']
+        wave = np.asarray([0.35949,0.46404,0.61223,0.74395,0.88971,1.2350,1.6620,2.1590,3.3526,4.6028,11.5608,22.0883])
+        mags = np.asarray([source[band] for band in bands])
+        errs = np.asarray([source[band] for band in ['e_'+b for b in bands]])
+        zp = np.array([3.639e-9,5.521e-9,2.529e-9,1.409e-9,8.501e-10,3.143e-10,1.144e-10,
+                       4.306e-11,8.238e-12,2.431e-12,6.570e-14,4.995e-15])*q.erg/q.cm**2/q.s/q.AA
+
+        # Convert to flux
+        flux = [mag2flux(b,m,e,z) for b,m,e,z in zip(bands,mags,errs,zp)]
+        unc = np.asarray([i[1].value for i in flux])
+        flux = np.asarray([i[0].value for i in flux])
+        
+        # Get non-nan values
+        
+
+        # Plot the SED
+        if any([i!=np.nan for i in unc]):
+            fig = plt.figure(figsize=(6,3))
+            ax = fig.add_subplot(111)
+            plt.title('{}, {}'.format(source['ra'],source['dec']))
+            ax.errorbar(wave, flux, yerr=unc, marker='o', ls='none')
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlim(0.2,5)
+
+def mag2flux(band, mag, sig_mag, zp):
+    """
+    Calculates the magnitude in units [ergs][s-1][cm-2][A-1]
+    """
+    try:
+        f = (zp*10**(-mag / 2.5)).to(q.erg/q.s/q.cm**2/q.AA)
+        sig_f = f*sig_mag*np.log(10)/2.5 if sig_mag else np.nan
+    except:
+        f, sig_f = [np.nan]*2
+    
+    return [f, sig_f]
+    
 def get_coordinates(coords, metadata):
     """
     Calculates the RA and Dec values of the given coords
@@ -262,12 +317,18 @@ def get_coordinates(coords, metadata):
     # note that use the subtile center for this purpose
     # ratile is the ra of the tile center
     # dectile is the dec of the tile center
-    ratile, dectile = metadata['RA'], metadata['Dec']
+    # ratile, dectile = metadata['RA'], metadata['Dec']
+    ratile = float(metadata['Center'].split('=')[1].replace(' dec',''))
+    dectile = float(metadata['Center'].split('=')[2].replace(' ',''))
     tilename = metadata['images'].split(',')[0]
     
     # Make arrays of the x and y coordinates
     x, y = np.asarray(coords['x']), np.asarray(coords['y'])
-
+    
+    # Convert from Zooniverse to unWISE coords
+    # x = (x-20)*0.5
+    # y = 256-0.5*y
+    
     # Here are some sines and cosines for the gnomonic projection
     sinra = np.sin(ratile*pio180)
     sindec = np.sin(dectile*pio180)
@@ -304,7 +365,7 @@ def get_coordinates(coords, metadata):
 
     return (ra, dec)
 
-def cluster_centers(coords, radius=20, num=3):
+def cluster_centers(coords, radius=20, num=8):
     """
     Calculate the centers of the point clusters given the
     radius and minimum number of points
